@@ -25,7 +25,7 @@ class MyAccessibilityService : AccessibilityService() {
     private var screenHeight = 0
     private var lastKnownIp: String = "نامشخص"
 
-    // لیست کلمات برای رد کردن موانع
+    // کلمات بولدوزر (رد کردن پاپ‌آپ)
     private val bullDozerKeywords = listOf(
         "Accept", "Agree", "Continue", "Next", "Got it", "Allow", "While using the app", "Only this time", "Use precise location", "Yes, I'm in", "Ok",
         "No thanks", "Not now", "Dismiss", "Close", "Deny", "Don't allow",
@@ -33,19 +33,10 @@ class MyAccessibilityService : AccessibilityService() {
         "خیر", "نه", "اکنون نه", "بعداً", "رد کردن", "بستن", "اجازه نده"
     )
 
-    // 1. لیست هدرهای بخش تبلیغات (طبق تصویر شما)
+    // فقط هدر را لازم داریم تا نقطه شروع آتش را پیدا کنیم
     private val sponsoredHeaders = listOf(
-        "Sponsored results",
-        "نتایج حامی مالی",
-        "نتایج تبلیغاتی",
-        "آگهی‌ها",
-        "Ads"
-    )
-
-    // 2. لیست کلمات تکی برای تشخیص تبلیغ (روش قبلی)
-    private val adLabelKeywords = listOf(
-        "Sponsored", "Ad", "Ads",
-        "آگهی", "تبلیغ", "اسپانسر"
+        "Sponsored results", "Sponsored",
+        "نتایج حامی مالی", "نتایج تبلیغاتی", "آگهی‌ها"
     )
 
     private val closeAllTexts = listOf("Close all", "Clear all", "بستن همه", "پاکسازی", "حذف همه", "بستن همه برنامه‌ها")
@@ -60,7 +51,7 @@ class MyAccessibilityService : AccessibilityService() {
         screenWidth = metrics.widthPixels
         screenHeight = metrics.heightPixels
 
-        logAndToast("✅ سرویس متصل شد. آماده شکار.")
+        logAndToast("✅ سرویس متصل شد. حالت رگباری (Blind Sweep) فعال است.")
         startAutomationLoop()
     }
 
@@ -83,15 +74,15 @@ class MyAccessibilityService : AccessibilityService() {
                 logAndToast("🚀 شروع عملیات: $userQuery")
 
                 try {
-                    // 1. باز کردن کروم و سرچ
+                    // 1. جستجو
                     if (performFullIncognitoSearch(userQuery)) {
 
-                        logAndToast("⏳ تحلیل نتایج جستجو...")
+                        logAndToast("⏳ موقعیت‌گیری توپخانه...")
                         delay(5000)
 
-                        // 2. کلیک هوشمند روی تبلیغات (زیر هدر یا دارای لیبل)
+                        // 2. اجرای آتش کور زیر هدر
                         if (Prefs.isBotActive(this@MyAccessibilityService)) {
-                            clickHeaderBasedAds(pageDelaySeconds)
+                            performBlindSweep(pageDelaySeconds)
                         }
 
                     } else {
@@ -100,7 +91,7 @@ class MyAccessibilityService : AccessibilityService() {
 
                     if (!Prefs.isBotActive(this@MyAccessibilityService)) continue
 
-                    logAndToast("❌ پایان سیکل. بستن برنامه...")
+                    logAndToast("❌ پایان عملیات. بستن مرورگر...")
                     closeChromeForcefully()
                     delay(3000)
 
@@ -118,151 +109,114 @@ class MyAccessibilityService : AccessibilityService() {
         }
     }
 
-    // --- تابع اصلی شکار تبلیغات ---
-    private suspend fun clickHeaderBasedAds(stayOnPageTime: Int) {
-        var currentAdIndex = 0
+    // --- تابع جدید: شلیک کور به پایین (Pixel Sweep) ---
+    private suspend fun performBlindSweep(stayOnPageTime: Int) {
         var scrollAttempts = 0
-        val maxScrolls = 7
+        val maxScrolls = 5
 
-        Logger.log("💰 شروع اسکن ساختاری (Header Scan)...")
+        Logger.log("💣 شروع جاروی مختصاتی (پیکسل به پیکسل)...")
 
         while (isRunning && Prefs.isBotActive(this) && scrollAttempts < maxScrolls) {
-            delay(2500)
+            delay(3000)
             val root = rootInActiveWindow
+
             if (root == null) {
                 Logger.log("❌ صفحه در دسترس نیست.")
                 break
             }
 
-            // 1. پیدا کردن تبلیغات با الگوریتم ترکیبی (هدر + لیبل)
-            val detectedAds = scanForAdsRecursive(root)
+            // 1. فقط هدر را پیدا کن
+            val headerNode = findHeaderNode(root)
 
-            // حذف موارد تکراری (ممکن است یک نود هم لیبل داشته باشد هم زیر هدر باشد)
-            val uniqueAds = detectedAds.distinct()
+            if (headerNode != null) {
+                val headerRect = Rect()
+                headerNode.getBoundsInScreen(headerRect)
+                Logger.log("📍 هدر پیدا شد. خط آتش: Y=${headerRect.bottom}")
 
-            Logger.log("🔍 در این نما ${uniqueAds.size} تبلیغ شناسایی شد.")
+                val startY = headerRect.bottom + 50 // شروع از 50 پیکسل پایین‌تر از هدر
+                val stepY = 120 // فاصله هر شلیک (حدود ارتفاع یک لینک)
+                val attempts = 4 // ۴ بار شلیک کن (تا ۴۰۰-۵۰۰ پیکسل پایین‌تر)
 
-            if (currentAdIndex < uniqueAds.size) {
-                val targetNode = uniqueAds[currentAdIndex]
-                Logger.log("🎯 هدف‌گیری تبلیغ #${currentAdIndex + 1}...")
+                var successfulHit = false
 
-                if (performClickOnAd(targetNode)) {
-                    Logger.log("✅ کلیک موفق. مشاهده سایت...")
+                // حلقه آتش
+                for (i in 0 until attempts) {
+                    if (!Prefs.isBotActive(this)) break
 
-                    // شبیه‌سازی رفتار کاربر
+                    val targetY = startY + (i * stepY)
+                    val targetX = screenWidth / 2f // وسط صفحه
+
+                    // اگر از صفحه بیرون زدیم، ادامه نده
+                    if (targetY > screenHeight - 100) break
+
+                    Logger.log("💥 شلیک شماره ${i + 1} به مختصات ($targetX, $targetY)...")
+                    performTap(targetX, targetY.toFloat())
+
+                    // صبر کن ببینیم اتفاقی میوفته؟
+                    Logger.log("⏳ انتظار برای واکنش مرورگر...")
+                    delay(2500)
+
+                    // چک کنیم که آیا هنوز در صفحه سرچ هستیم؟
+                    // اگر آدرس بار تغییر کرده باشد یا صفحه لود شده باشد، یعنی کلیک گرفته
+                    // روش ساده: چک میکنیم آیا هنوز هدر Sponsored results دیده میشه؟
+                    val currentRoot = rootInActiveWindow
+                    if (currentRoot != null) {
+                        val checkHeader = findHeaderNode(currentRoot)
+                        if (checkHeader == null) {
+                            Logger.log("✅ هدف منهدم شد (هدر دیگر دیده نمی‌شود). ورود به سایت...")
+                            successfulHit = true
+                            break
+                        } else {
+                            Logger.log("❌ واکنشی نداشت. شلیک بعدی...")
+                        }
+                    }
+                }
+
+                if (successfulHit) {
+                    // صبر برای بازدید سایت
                     delay((stayOnPageTime * 1000L) / 3)
                     performSwipe(screenWidth/2f, screenHeight*0.8f, screenWidth/2f, screenHeight*0.4f, 700)
                     delay((stayOnPageTime * 1000L) / 3)
 
-                    Logger.log("🔙 بازگشت...")
+                    Logger.log("👋 بازگشت...")
                     performGlobalAction(GLOBAL_ACTION_BACK)
-
-                    currentAdIndex++
+                    return // پایان موفقیت آمیز
                 } else {
-                    Logger.log("⚠️ کلیک ناموفق. بعدی...")
-                    currentAdIndex++
+                    Logger.log("⚠️ هیچکدام از شلیک‌ها نگرفت. شاید نیاز به اسکرول است.")
                 }
+
             } else {
-                Logger.log("⬇️ اسکرول برای یافتن هدرهای بیشتر...")
+                Logger.log("⬇️ هدر Sponsored دیده نشد. اسکرول...")
                 performSwipe(screenWidth/2f, screenHeight*0.8f, screenWidth/2f, screenHeight*0.2f, 1000)
                 delay(3000)
-                currentAdIndex = 0
                 scrollAttempts++
             }
         }
+        Logger.log("🏁 عملیات بدون موفقیت پایان یافت.")
     }
 
-    /**
-     * الگوریتم اسکن درختی:
-     * کل درخت صفحه را پیمایش می‌کند.
-     * اگر به هدری مثل "Sponsored results" برسد، متغیر huntingMode فعال می‌شود.
-     * وقتی huntingMode فعال است، ۳ نود قابل کلیک بعدی را به عنوان تبلیغ ذخیره می‌کند.
-     */
-    private fun scanForAdsRecursive(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
-        val foundAds = mutableListOf<AccessibilityNodeInfo>()
-
-        // وضعیت شکار: آیا ما الان زیر یک هدر تبلیغاتی هستیم؟
-        var huntingLimit = 0
-
-        fun traverse(node: AccessibilityNodeInfo) {
-            if (!node.isVisibleToUser) return
-
-            val text = node.text?.toString()?.trim() ?: ""
-            val desc = node.contentDescription?.toString()?.trim() ?: ""
-            val allText = "$text $desc"
-
-            // الف) بررسی آیا این نود، هدر است؟
-            // (مثل تصویر شما: "Sponsored results")
-            for (header in sponsoredHeaders) {
-                if (text.equals(header, ignoreCase = true) || desc.equals(header, ignoreCase = true)) {
-                    Logger.log("🚩 هدر تبلیغاتی پیدا شد: $header")
-                    huntingLimit = 3 // شکار ۳ آیتم بعدی را فعال کن
-                    return // خود هدر قابل کلیک نیست، برو بعدی
-                }
-            }
-
-            // ب) اگر در حالت شکار هستیم، این نود را بگیر
-            if (huntingLimit > 0) {
-                if (node.isClickable) {
-                    Logger.log("🔥 شکار لینک زیر هدر: ${node.className}")
-                    foundAds.add(node)
-                    huntingLimit--
-                    return // نود را گرفتیم، نرو داخل فرزندانش (جلوگیری از کلیک تکراری روی اجزای داخلی)
-                } else {
-                    // اگر خود نود کلیک نمی‌شود، شاید والد قابل کلیک دارد که در پیمایش قبلی رد شده؟
-                    // اینجا فقط ادامه می‌دهیم تا فرزند قابل کلیک پیدا شود
-                }
-            }
-
-            // ج) روش سنتی: بررسی لیبل مستقیم (Ad) برای اطمینان
-            // (اگر هدر پیدا نشد ولی آیتم تکی وجود داشت)
-            if (huntingLimit == 0) { // فقط اگر در حالت شکار نیستیم چک کن (که تکراری نشود)
-                for (keyword in adLabelKeywords) {
-                    val isExact = text.equals(keyword, ignoreCase = true)
-                    val isStart = text.startsWith("$keyword ", ignoreCase = true) || text.startsWith("$keyword:", ignoreCase = true)
-
-                    if (text.length < 20 && (isExact || isStart)) {
-                        // این یک لیبل است. باید والد قابل کلیکش را پیدا کنیم
-                        val clickableParent = findClickableAncestor(node, 5)
-                        if (clickableParent != null) {
-                            foundAds.add(clickableParent)
-                            return
-                        }
+    private fun findHeaderNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        while (!queue.isEmpty()) {
+            val node = queue.removeFirst()
+            if (node.isVisibleToUser) {
+                val text = node.text?.toString() ?: ""
+                val desc = node.contentDescription?.toString() ?: ""
+                for (header in sponsoredHeaders) {
+                    if (text.equals(header, ignoreCase = true) || desc.equals(header, ignoreCase = true)) {
+                        return node
                     }
                 }
             }
-
-            // ادامه پیمایش درخت
             for (i in 0 until node.childCount) {
-                val child = node.getChild(i)
-                if (child != null) {
-                    traverse(child)
-                }
+                node.getChild(i)?.let { queue.add(it) }
             }
         }
-
-        traverse(root)
-        return foundAds
+        return null
     }
 
-    private fun findClickableAncestor(node: AccessibilityNodeInfo, maxLevels: Int): AccessibilityNodeInfo? {
-        var current = node
-        repeat(maxLevels) {
-            val parent = current.parent ?: return null
-            if (parent.isClickable) return parent
-            current = parent
-        }
-        return current
-    }
-
-    private fun performClickOnAd(node: AccessibilityNodeInfo): Boolean {
-        if (node.isClickable) {
-            return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        }
-        return false
-    }
-
-    // --- توابع استاندارد (بدون تغییر) ---
+    // --- توابع استاندارد ---
     private suspend fun performFullIncognitoSearch(query: String): Boolean {
         performGlobalAction(GLOBAL_ACTION_HOME)
         delay(1500)
@@ -275,22 +229,24 @@ class MyAccessibilityService : AccessibilityService() {
         repeat(2) { if (clearAllPopups()) delay(1500) }
 
         val menuNode = findNodeByContentDescription("More options") ?: findNodeByID("com.android.chrome:id/menu_button")
-        if (menuNode != null && clickNode(menuNode)) {
+        if (menuNode != null) {
+            performClickNodeOrTap(menuNode)
             delay(1500)
             val incognitoNode = findNodeByText("New Incognito tab") ?: findNodeByText("زبانه ناشناس جدید")
-            if (incognitoNode != null && clickNode(incognitoNode)) {
+            if (incognitoNode != null) {
+                performClickNodeOrTap(incognitoNode)
                 delay(4000)
                 clearAllPopups()
                 val urlBar = findNodeByID("com.android.chrome:id/search_box_text") ?: findNodeByID("com.android.chrome:id/url_bar")
                 if (urlBar != null) {
-                    clickNode(urlBar)
+                    performClickNodeOrTap(urlBar)
                     delay(1000)
                     val args = Bundle()
                     args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, query)
                     urlBar.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
                     delay(2000)
                     val sug = findNodeByID("com.android.chrome:id/line_1")
-                    if (sug != null) clickNode(sug)
+                    if (sug != null) performClickNodeOrTap(sug)
                     else performTap((screenWidth * 0.9).toFloat(), (screenHeight * 0.9).toFloat())
                     return true
                 }
@@ -298,14 +254,14 @@ class MyAccessibilityService : AccessibilityService() {
         } else {
             val urlBar = findNodeByID("com.android.chrome:id/search_box_text") ?: findNodeByID("com.android.chrome:id/url_bar")
             if (urlBar != null) {
-                clickNode(urlBar)
+                performClickNodeOrTap(urlBar)
                 delay(1000)
                 val args = Bundle()
                 args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, query)
                 urlBar.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
                 delay(1000)
                 val sug = findNodeByID("com.android.chrome:id/line_1")
-                if (sug != null) clickNode(sug)
+                if (sug != null) performClickNodeOrTap(sug)
                 return true
             }
         }
@@ -319,7 +275,8 @@ class MyAccessibilityService : AccessibilityService() {
             if (!nodes.isNullOrEmpty()) {
                 for (node in nodes) {
                     if (node.isVisibleToUser && node.isEnabled) {
-                        if (clickNode(node)) return true
+                        performClickNodeOrTap(node)
+                        return true
                     }
                 }
             }
@@ -335,7 +292,7 @@ class MyAccessibilityService : AccessibilityService() {
             for (text in closeAllTexts) {
                 val found = root.findAccessibilityNodeInfosByText(text)
                 if (!found.isNullOrEmpty()) {
-                    performClickNode(found[0])
+                    performClickNodeOrTap(found[0])
                     delay(1000)
                     performGlobalAction(GLOBAL_ACTION_HOME)
                     return
@@ -389,9 +346,9 @@ class MyAccessibilityService : AccessibilityService() {
             airplaneNode = findAirplaneModeButton()
         }
         airplaneNode?.let { node ->
-            performClickNode(node)
+            performClickNodeOrTap(node)
             delay(userDuration * 1000L)
-            performClickNode(node)
+            performClickNodeOrTap(node)
             delay(2000)
             performGlobalAction(GLOBAL_ACTION_BACK)
             delay(500)
@@ -450,15 +407,22 @@ class MyAccessibilityService : AccessibilityService() {
         }
         return null
     }
-    private fun clickNode(node: AccessibilityNodeInfo): Boolean {
-        if (node.isClickable) return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        return node.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK) ?: false
+
+    private fun performClickNodeOrTap(node: AccessibilityNodeInfo) {
+        if (node.isClickable) {
+            val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!clicked) {
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                performTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+            }
+        } else {
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            performTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+        }
     }
-    private fun performClickNode(node: AccessibilityNodeInfo) {
-        val rect = Rect()
-        node.getBoundsInScreen(rect)
-        performTap(rect.centerX().toFloat(), rect.centerY().toFloat())
-    }
+
     private fun performSwipe(x1: Float, y1: Float, x2: Float, y2: Float, duration: Long) {
         val path = Path()
         path.moveTo(x1, y1)
@@ -466,6 +430,7 @@ class MyAccessibilityService : AccessibilityService() {
         val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, duration)).build()
         dispatchGesture(gesture, null, null)
     }
+
     private fun performTap(x: Float, y: Float) {
         val path = Path()
         path.moveTo(x, y)
@@ -473,6 +438,7 @@ class MyAccessibilityService : AccessibilityService() {
         val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 100)).build()
         dispatchGesture(gesture, null, null)
     }
+
     private fun logAndToast(msg: String) {
         Logger.log(msg)
         Handler(Looper.getMainLooper()).post { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
