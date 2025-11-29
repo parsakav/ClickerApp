@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">ClickerP</string>
+    <string name="accessibility_service_description">این سرویس برای تغییر خودکار حالت هواپیما (Airplane Mode) استفاده می‌شود. لطفاً برای عملکرد صحیح برنامه، آن را فعال کنید.</string>
+</resources>
