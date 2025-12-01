@@ -69,6 +69,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     var selectedSwipeDir by remember { mutableIntStateOf(Prefs.getRecentsSwipeDir(context)) }
     var airplaneDurationText by remember { mutableStateOf(Prefs.getAirplaneDuration(context).toString()) }
     var pageLoadDelayText by remember { mutableStateOf(Prefs.getPageLoadDelay(context).toString()) }
+
+    // خواندن مقدار ذخیره شده فعلی
     var searchQuery by remember { mutableStateOf(Prefs.getSearchQuery(context)) }
 
     Column(
@@ -176,12 +178,24 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             Text("⚙️ تنظیمات پیشرفته", fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(16.dp))
 
+            // --- بخش تغییر یافته: انتخاب عبارت جستجو ---
             Text("🔍 عبارت جستجو:", fontWeight = FontWeight.Bold)
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it; Prefs.setSearchQuery(context, it) },
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true
+
+            val searchOptions = listOf("امداد خودرو اصفهان فوری", "امداد خودرو فوری اصفهان", "امداد خودرو اصفهان")
+            // پیدا کردن ایندکس گزینه انتخاب شده (اگر متن ذخیره شده در لیست نبود، پیش‌فرض اولی انتخاب می‌شود)
+            val currentSearchIndex = searchOptions.indexOf(searchQuery).let { if (it == -1) 0 else it }
+
+            RadioOptions(
+                options = searchOptions,
+                selectedIndex = currentSearchIndex,
+                onSelect = { index ->
+                    val selected = searchOptions[index]
+                    searchQuery = selected
+                    Prefs.setSearchQuery(context, selected)
+                }
             )
+            // ------------------------------------------
+
             Spacer(modifier = Modifier.height(16.dp))
 
             Text("⏳ صبر برای لود سایت (ثانیه):", fontWeight = FontWeight.Bold)
