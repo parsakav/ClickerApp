@@ -18,7 +18,13 @@ import java.net.URL
 import java.nio.charset.Charset
 
 class MyAccessibilityService : AccessibilityService() {
-
+    // لیست کلمات و عباراتی که نباید روی آنها کلیک شود (دکمه‌های تماس، نقشه و...)
+    private val actionBlacklist = listOf(
+        "Call", "Call now", "Dial", "Phone",
+        "تماس", "تماس بگیرید", "شماره تماس", "تلفن",
+        "Directions", "Get directions", "مسیریابی", "نقشه",
+        "Website", "وب‌سایت" // گاهی دکمه‌های ریز وبسایت جدا از تیتر هستند
+    )
     private val serviceScope = CoroutineScope(Dispatchers.Main)
     private var isRunning = false
     private var screenWidth = 0
@@ -27,10 +33,10 @@ class MyAccessibilityService : AccessibilityService() {
 
     // --- لیست سیاه (سایت‌هایی که نباید کلیک شوند) ---
     private val excludedDomains = listOf(
-        "emdad-khodro-esfahan",
-        "emdadkhodro-bushehr",
-        "emdad-khodro-esfahan.ir",
-        "emdadkhodro-bushehr.com"
+        "emdadkhodro-fori-esfahan",
+        "emdad-khodro-boshehr",
+        "emdadkhodro-fori-esfahan.com",
+        "emdad-khodro-boshehr.com"
     )
 
     // کلمات بولدوزر (رد کردن پاپ‌آپ)
@@ -84,12 +90,15 @@ class MyAccessibilityService : AccessibilityService() {
                 try {
                     // 1. جستجو
                     if (performFullIncognitoSearch(userQuery)) {
-
+                        clickSpecificWord("Not now");
+                        clickSpecificWord("Reject all");
                         logAndToast("⏳ اسکن هوشمند و فیلترینگ...")
                         delay(5000)
-
+                        clickSpecificWord("Not now");
+                        clickSpecificWord("Reject all");
                         // 2. اجرای کلیک هوشمند با فیلتر لیست سیاه
                         if (Prefs.isBotActive(this@MyAccessibilityService)) {
+
                             clickFirstValidAd(pageDelaySeconds)
                         }
 
@@ -163,6 +172,13 @@ class MyAccessibilityService : AccessibilityService() {
                     // اگر ممنوع نبود، کلیک کن
                     val rect = Rect()
                     node.getBoundsInScreen(rect)
+                    // جلوگیری از کلیک روی شماره تلفن
+                    val innerText = node.text?.toString() ?: ""
+                    if (isPhoneLike(innerText)) {
+                        Logger.log("🚫 این مورد شبیه شماره تلفن است. رد شد: '$innerText'")
+                        continue
+                    }
+
                     Logger.log("✅ هدف مجاز تایید شد. شلیک به (${rect.centerX()}, ${rect.centerY()})...")
 
                     performTap(rect.centerX().toFloat(), rect.centerY().toFloat())
@@ -198,6 +214,7 @@ class MyAccessibilityService : AccessibilityService() {
         Logger.log("🏁 عملیات بدون نتیجه پایان یافت.")
     }
 
+
     // --- تابع بازگشتی برای چک کردن کلمات ممنوعه داخل یک نود ---
     private fun isNodeBlacklisted(node: AccessibilityNodeInfo): Boolean {
         // صف برای پیمایش تمام فرزندان نود
@@ -226,7 +243,6 @@ class MyAccessibilityService : AccessibilityService() {
         }
         return false
     }
-
     // پیدا کردن تمام اهداف زیر هدر
     private fun findAllTargetsBelow(root: AccessibilityNodeInfo, headerBottomY: Int): List<AccessibilityNodeInfo> {
         val candidates = mutableListOf<AccessibilityNodeInfo>()
@@ -280,6 +296,11 @@ class MyAccessibilityService : AccessibilityService() {
     private suspend fun handleSiteVisit(stayOnPageTime: Int) {
         Logger.log("⏳ توقف در سایت ($stayOnPageTime ثانیه)...")
         delay(stayOnPageTime * 1000L)
+        clickSpecificWord("تماس با ما")
+        clickSpecificWord("تماس با پشتیبانی")
+        clickSpecificWord("تماس")
+        clickSpecificWord("ارتباط با ما")
+
         performSwipe(screenWidth/2f, screenHeight*0.8f, screenWidth/2f, screenHeight*0.4f, 1000)
         delay(2000)
         Logger.log("👋 بازگشت...")
@@ -379,35 +400,110 @@ class MyAccessibilityService : AccessibilityService() {
         return false
     }
 
+    private fun isPhoneLike(text: String): Boolean {
+        val t = text.lowercase()
+
+        // شامل کلمه call یا تماس
+        if (t.contains("Call") || t.contains("تماس")) return true
+
+        // الگوی شماره موبایل ایران 09
+        if (t.contains("09") || t.contains("۰۹")) return true
+
+        // شامل حداقل 4 رقم پشت سر هم
+        val digitCount = t.count { it.isDigit() }
+        if (digitCount >= 4) return true
+
+        return false
+    }
+
+    // --- لیست کلمات کلیدی برای دکمه توقف اجباری و تایید ---
+    private val forceStopKeywords = listOf("Force stop", "توقف اجباری", "توقف")
+    private val confirmKeywords = listOf("OK", "Force stop", "تایید", "باشه", "بله")
+
+    /**
+     * پروتکل قتل فرآیند:
+     * 1. باز کردن صفحه تنظیمات کروم
+     * 2. پیدا کردن دکمه توقف اجباری
+     * 3. تایید دیالوگ اخطار
+     */
     private suspend fun closeChromeForcefully() {
-        performGlobalAction(GLOBAL_ACTION_RECENTS)
-        delay(3000)
+        Logger.log("☠️ آغاز پروتکل توقف اجباری (Force Stop)...")
+
+        // 1. باز کردن صفحه App Info کروم
+        val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+        intent.data = Uri.parse("package:com.android.chrome")
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION) // سرعت بیشتر
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            Logger.log("⚠️ خطا در باز کردن تنظیمات: ${e.message}")
+            return
+        }
+
+        // صبر برای لود شدن تنظیمات
+        delay(2500)
+
         val root = rootInActiveWindow
-        if (root != null) {
-            for (text in closeAllTexts) {
-                val found = root.findAccessibilityNodeInfosByText(text)
-                if (!found.isNullOrEmpty()) {
-                    performClickNodeOrTap(found[0])
-                    delay(1000)
-                    performGlobalAction(GLOBAL_ACTION_HOME)
-                    return
+        if (root == null) {
+            Logger.log("❌ دسترسی به صفحه تنظیمات ممکن نشد.")
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            return
+        }
+
+        // 2. جستجو برای دکمه Force Stop
+        var forceStopClicked = false
+        for (keyword in forceStopKeywords) {
+            val nodes = root.findAccessibilityNodeInfosByText(keyword)
+            if (!nodes.isNullOrEmpty()) {
+                for (node in nodes) {
+                    // چک می‌کنیم دکمه فعال باشد (اگر قبلا استاپ شده باشد، غیرفعال است)
+                    if (node.isClickable && node.isEnabled) {
+                        Logger.log("target locked: دکمه '${node.text}' پیدا شد. شلیک...")
+                        performClickNodeOrTap(node)
+                        forceStopClicked = true
+                        break
+                    } else if (!node.isEnabled) {
+                        Logger.log("ℹ️ برنامه از قبل متوقف شده است.")
+                        performGlobalAction(GLOBAL_ACTION_HOME)
+                        return
+                    }
+                }
+            }
+            if (forceStopClicked) break
+        }
+
+        if (!forceStopClicked) {
+            // در برخی گوشی‌های سامسونگ دکمه در پایین صفحه است، شاید نیاز به اسکرول نباشد اما چک میکنیم
+            Logger.log("⚠️ دکمه توقف پیدا نشد (شاید زبان گوشی متفاوت است).")
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            return
+        }
+
+        // 3. هندل کردن دیالوگ تایید (Are you sure?)
+        delay(1500) // صبر برای پاپ‌آپ
+        val dialogRoot = rootInActiveWindow
+        if (dialogRoot != null) {
+            for (keyword in confirmKeywords) {
+                val nodes = dialogRoot.findAccessibilityNodeInfosByText(keyword)
+                if (!nodes.isNullOrEmpty()) {
+                    for (node in nodes) {
+                        if (node.isClickable) {
+                            Logger.log("✅ تایید توقف اجباری.")
+                            performClickNodeOrTap(node)
+                            delay(1000)
+                            break
+                        }
+                    }
                 }
             }
         }
-        val dir = Prefs.getRecentsSwipeDir(this)
-        val cx = screenWidth / 2f
-        val cy = screenHeight / 2f
-        val (x1, y1, x2, y2) = when (dir) {
-            Prefs.SWIPE_UP -> listOf(cx, screenHeight * 0.85f, cx, screenHeight * 0.15f)
-            Prefs.SWIPE_RIGHT -> listOf(screenWidth * 0.1f, cy, screenWidth * 0.9f, cy)
-            Prefs.SWIPE_LEFT -> listOf(screenWidth * 0.9f, cy, screenWidth * 0.1f, cy)
-            else -> listOf(cx, screenHeight * 0.8f, cx, screenHeight * 0.2f)
-        }
-        performSwipe(x1, y1, x2, y2, 300)
-        delay(500)
-        performSwipe(x1, y1, x2, y2, 300)
+
+        // بازگشت به خانه
         delay(1000)
         performGlobalAction(GLOBAL_ACTION_HOME)
+        Logger.log("💀 کروم با موفقیت ترمینیت شد.")
     }
 
     private suspend fun ensureIpChange() {
@@ -469,7 +565,7 @@ class MyAccessibilityService : AccessibilityService() {
 
     private fun findAirplaneModeButton(): AccessibilityNodeInfo? {
         val root = rootInActiveWindow ?: return null
-        val targets = listOf("Airplane", "Flight", "حالت هواپیما", "حالت پرواز", "پرواز")
+        val targets = listOf("Airplane","Aeroplane","Aeroplane mode","Airplane mode", "Flight", "حالت هواپیما", "حالت پرواز", "پرواز")
         for (text in targets) {
             val list = root.findAccessibilityNodeInfosByText(text)
             if (!list.isNullOrEmpty()) return list[0]
@@ -537,6 +633,87 @@ class MyAccessibilityService : AccessibilityService() {
         super.onDestroy()
         Logger.isServiceConnected.value = false
         isRunning = false
+    }
+    /**
+     * 🎯 تابع شکارچی کلمات
+     * ورودی: کلمه مورد نظر (مثلا "تایید" یا "Submit")
+     * خروجی: ترو (True) اگر کلیک کرد، فالس (False) اگر پیدا نکرد
+     */
+    private fun clickSpecificWord(targetWord: String): Boolean {
+        val root = rootInActiveWindow ?: return false
+        Logger.log("🔎 شروع اسکن برای کلمه: '$targetWord'...")
+
+        // 1. روش سریع: استفاده از API استاندارد اندروید
+        val fastNodes = root.findAccessibilityNodeInfosByText(targetWord)
+        if (!fastNodes.isNullOrEmpty()) {
+            for (node in fastNodes) {
+                if (node.isVisibleToUser) {
+                    Logger.log("⚡ هدف با اسکن سریع پیدا شد.")
+                    performSmartClick(node)
+                    return true
+                }
+            }
+        }
+
+        // 2. روش عمیق: اسکن دستی تمام درخت (اگر روش اول شکست خورد)
+        // این روش برای دکمه‌هایی خوبه که متنشون داخل ContentDescription مخفی شده
+        val deepNode = findNodeRecursiveByString(root, targetWord)
+        if (deepNode != null) {
+            Logger.log("⚡ هدف با اسکن عمیق پیدا شد.")
+            performSmartClick(deepNode)
+            return true
+        }
+
+        Logger.log("❌ کلمه '$targetWord' در صفحه یافت نشد.")
+        return false
+    }
+
+    // --- تابع کمکی: اسکن بازگشتی (Deep Scan) ---
+    private fun findNodeRecursiveByString(node: AccessibilityNodeInfo, target: String): AccessibilityNodeInfo? {
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        val t = target.lowercase()
+
+        // شرط تطابق: اگر متن یا توضیحات شامل کلمه مورد نظر بود
+        if (text.contains(t) || desc.contains(t)) {
+            if (node.isVisibleToUser) return node
+        }
+
+        // جستجو در فرزندان
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findNodeRecursiveByString(child, target)
+            if (found != null) return found
+        }
+        return null
+    }
+
+    // --- تابع کلیک هوشمند (که قبلاً داشتیم - جهت اطمینان اینجا هم میذارم) ---
+    private fun performSmartClick(node: AccessibilityNodeInfo) {
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+
+        if (node.isClickable) {
+            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            return
+        }
+
+        // جستجوی پدر (Parent) اگر خود نود کلیک‌خور نباشد
+        var parent = node.parent
+        var attempts = 0
+        while (parent != null && attempts < 4) {
+            if (parent.isClickable) {
+                Logger.log("⚡ کلیک روی کانتینرِ دکمه...")
+                parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                return
+            }
+            parent = parent.parent
+            attempts++
+        }
+
+        // تپ فیزیکی (آخرین راه حل)
+        Logger.log("⚡ تپ فیزیکی روی (${rect.centerX()}, ${rect.centerY()})")
+        performTap(rect.centerX().toFloat(), rect.centerY().toFloat())
     }
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() { isRunning = false; serviceScope.cancel() }
